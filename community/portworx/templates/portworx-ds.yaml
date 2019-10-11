@@ -17,11 +17,7 @@
 {{- $internalKVDB := .Values.internalKVDB | default false }}
 {{- $csi := .Values.csi | default false }}
 
-{{- $etcdCredentials := .Values.etcd.credentials | default "none:none" }}
-{{- $etcdCertPath := .Values.etcd.certPath | default "none" }}
-{{- $etcdCA := .Values.etcd.ca | default "none" }}
-{{- $etcdCert := .Values.etcd.cert | default "none" }}
-{{- $etcdKey := .Values.etcd.key | default "none" }}
+{{- $etcdSecret := .Values.etcd.secret | default "none" }}
 {{- $etcdEndPoints := .Values.kvdb }}
 
 apiVersion: apps/v1
@@ -47,7 +43,7 @@ spec:
   template:
     metadata:
       annotations:
-        helm.sh/charts: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+{{- include "px.metering.annotations" . | nindent 8 }}
       labels:
         name: portworx
 {{- include "px.labels" . | nindent 8 }}
@@ -63,6 +59,11 @@ spec:
                 - "false"
               - key: node-role.kubernetes.io/master
                 operator: DoesNotExist
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
       hostNetwork: true
       hostPID: true
       {{- if not (eq $registrySecret "none") }}
@@ -128,20 +129,9 @@ spec:
               "-m", "{{ $managementInterface }}",
               {{- end -}}
 
-              {{- if ne $etcdCredentials "none:none" }}
-              "-userpwd", "{{ $etcdCredentials }}",
-              {{- end -}}
-
-              {{- if ne $etcdCA "none" }}
-              "-ca", "{{ $etcdCA }}",
-              {{- end -}}
-
-              {{- if ne $etcdCert "none" }}
-              "-cert", "{{ $etcdCert }}",
-              {{- end -}}
-
-              {{- if ne $etcdKey "none" }}
-              "-key", "{{ $etcdKey }}",
+              {{- if ne $etcdSecret "none" }}
+              "-userpwd", "$(ETCD_USERNAME):$(ETCD_PASSWORD)",
+              "-ca", "/etc/pwx/etcdcerts/ca.pem",
               {{- end -}}
 
               "-x", "kubernetes",
@@ -174,6 +164,18 @@ spec:
                   key: ".dockerconfigjson"
                   name: "{{ $registrySecret }}"
             {{- end }}
+           {{- if not (eq $etcdSecret "none") }}
+            - name: ETCD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  key: "username"
+                  name: "{{ $etcdSecret }}"
+            - name: ETCD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: "password"
+                  name: "{{ $etcdSecret }}"
+            {{- end }}
 
             {{- if eq $csi true }}
             - name: CSI_ENDPOINT
@@ -195,8 +197,12 @@ spec:
               port: 9015
           securityContext:
             privileged: true
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop:
+              - ALL
           volumeMounts:
-          {{- if not (eq $etcdCertPath "none") }}
+          {{- if not (eq $etcdSecret "none") }}
             - mountPath: /etc/pwx/etcdcerts
               name: etcdcerts
           {{- end }}
@@ -248,21 +254,16 @@ spec:
             - name: csi-driver-path
               mountPath: /csi
            {{- end }}
-
       restartPolicy: Always
       serviceAccountName: px-account
       volumes:
-          {{- if not (eq $etcdCertPath "none") }}
+          {{- if not (eq $etcdSecret "none") }}
         - name: etcdcerts
           secret:
-            secretName: px-etcd-certs
+            secretName: {{ $etcdSecret }}
             items:
             - key: ca.pem
               path: ca.pem
-            - key: client.pem
-              path: client.pem
-            - key: client-key.pem
-              path: client-key.key
           {{- end}}
         - name: dockersock
           hostPath:
